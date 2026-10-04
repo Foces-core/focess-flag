@@ -28,3 +28,4 @@ For general questions and project help, see [SUPPORT.md](SUPPORT.md).
 ## License
 
 This project is licensed under the [MIT License](LICENSE).
+<!-- integration-probe: trivial whitespace to trigger PR checks (will be closed unmerged) -->
