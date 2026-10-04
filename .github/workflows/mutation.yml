@@ -1,0 +1,68 @@
+name: Mutation testing
+
+# Stryker mutation testing. Runs only when a JS/TS project with mutation
+# support exists (stryker config + package.json with test:mutation script).
+# On a setup-stage repo with no source, the job succeeds quietly with a notice.
+# Paths filter + in-job guards keep PRs green until mutation testing applies.
+
+on:
+  push:
+    branches: [main]
+    paths: ["src/**", "stryker.config.json", "vitest.config.ts", "package.json"]
+  pull_request:
+    paths: ["src/**", "stryker.config.json", "vitest.config.ts", "package.json"]
+  workflow_dispatch:
+
+concurrency:
+  group: mutation-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  mutation:
+    name: Stryker mutation score
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect mutation support
+        id: detect
+        run: |
+          if [ -f stryker.config.json ] && [ -f package.json ] && grep -q '"test:mutation"' package.json; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No mutation setup (stryker.config.json + test:mutation script) — skipping."
+          fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.detect.outputs.supported == 'true'
+        with:
+          version: 10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: steps.detect.outputs.supported == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.detect.outputs.supported == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Run mutation tests
+        if: steps.detect.outputs.supported == 'true'
+        run: pnpm test:mutation
+
+      - name: Upload mutation report
+        if: always() && steps.detect.outputs.supported == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: stryker-report
+          path: stryker-report/
+          retention-days: 14

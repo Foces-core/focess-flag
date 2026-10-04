@@ -1,0 +1,21 @@
+version = 1
+
+# DeepSource static analysis. Activates automatically once the DeepSource
+# GitHub App is installed on this repository; until then this file is inert.
+# Analyzers run only on files that exist, so an empty/setup-stage repo stays green.
+# When JS/TS or Python source lands, remove/adjust exclude_patterns as needed.
+
+[[analyzers]]
+name = "javascript"
+enabled = true
+
+[[analyzers]]
+name = "python"
+enabled = true
+
+exclude_patterns = [
+  "**/node_modules/**",
+  "**/coverage/**",
+  "**/dist/**",
+  "**/.next/**",
+]

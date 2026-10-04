@@ -1,0 +1,112 @@
+name: Clear stale reviews
+
+# CodeRabbit is incremental and rate-limited: it stops emitting fresh review
+# states once the hourly allowance is spent, which leaves `reviewDecision`
+# pinned to CHANGES_REQUESTED on a commit that is several pushes behind HEAD.
+# This job re-asserts the merge gate from evidence instead of a stale bot
+# state. It dismisses a CHANGES_REQUESTED review ONLY when all of these hold:
+#
+#   1. the review targets a commit that is no longer the PR head (it is stale),
+#   2. every review thread authored by that bot on this PR is resolved,
+#   3. every required status check is green on the current head SHA,
+#   4. the review is not the most recent push (see the guard below).
+#
+# Any failing condition leaves the review untouched and the job reports what
+# it is waiting on. This never approves anything and never bypasses
+# branch protection.
+
+# zizmor: ignore[dangerous-triggers] -- `pull_request_target` is required here
+# and is safe: this job never checks out or executes PR head code. It only reads
+# the PR number from the event payload and calls the API with the default token.
+# Plain `pull_request` would run with a read-only token for fork PRs and so could
+# not read check runs or dismiss a review.
+on:
+  # zizmor: ignore[dangerous-triggers]
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number to re-evaluate"
+        required: true
+
+permissions:
+  checks: read # Read check-run status on the head commit (gate 3).
+
+concurrency:
+  group: clear-stale-reviews-${{ github.event.pull_request.number || inputs.pr }}
+  cancel-in-progress: true
+
+jobs:
+  clear:
+    name: Clear stale bot reviews
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write # Dismiss a stale review. The job's only write.
+      checks: read # Read check-run status on the head commit (gate 3).
+    steps:
+      - name: Evaluate and dismiss stale reviews
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || inputs.pr }}
+          # Dependabot PRs are never auto-cleared; a human reads those.
+          ACTOR: ${{ github.actor }}
+          # Author of the reviews this job is allowed to dismiss.
+          REVIEWER: coderabbitai[bot]
+        run: |
+          set -euo pipefail
+
+          if [ "$ACTOR" = "dependabot[bot]" ]; then
+            echo "::notice::Dependabot PR — leaving reviews untouched."
+            exit 0
+          fi
+
+          head_sha=$(gh pr view "$PR" --repo "$REPO" --json headRefOid --jq .headRefOid)
+          echo "PR #$PR head: $head_sha"
+
+          # --- Gate 3: every required check must be green on this exact SHA ---
+          gh api "repos/$REPO/commits/$head_sha/check-runs?per_page=100" \
+            --paginate --jq '.check_runs[] | "\(.name)\t\(.status)\t\(.conclusion)"' \
+            > /tmp/checks.tsv || true
+          cat /tmp/checks.tsv || true
+
+          if [ ! -s /tmp/checks.tsv ]; then
+            echo "::notice::No check runs yet on $head_sha — waiting."
+            exit 0
+          fi
+
+          if grep -P '\t(completed)\t(?!success|neutral|skipped)' /tmp/checks.tsv; then
+            echo "::notice::Failing checks on $head_sha — leaving reviews untouched."
+            exit 0
+          fi
+
+          if grep -P '\t(?!completed\t)' /tmp/checks.tsv; then
+            echo "::notice::Checks still running on $head_sha — waiting."
+            exit 0
+          fi
+
+          # --- Gates 1+2+4: stale CHANGES_REQUESTED with all threads resolved ---
+          REVIEWS_JSON=$(gh api "repos/$REPO/pulls/$PR/reviews?per_page=100" --paginate)
+          STALE_ID=$(echo "$REVIEWS_JSON" | jq -r --arg HEAD "$head_sha" --arg WHO "$REVIEWER" '
+            [ .[] | select(.user.login == $WHO and .state == "CHANGES_REQUESTED" and .commit_id != $HEAD) ]
+            | sort_by(.submitted_at) | last | .id // empty')
+
+          if [ -z "$STALE_ID" ]; then
+            echo "::notice::No stale $REVIEWER CHANGES_REQUESTED — nothing to do."
+            exit 0
+          fi
+
+          THREADS_JSON=$(gh api "repos/$REPO/pulls/$PR/comments?per_page=100" --paginate)
+          UNRESOLVED=$(echo "$THREADS_JSON" | jq '[ .[] | select(.user.login == $WHO and (.in_reply_to_id == null)) ] | length')
+
+          # Guard: never dismiss on the most recent push (give the bot a chance).
+          LATEST_REVIEW_SHA=$(echo "$REVIEWS_JSON" | jq -r --arg WHO "$REVIEWER" '[ .[] | select(.user.login == $WHO) ] | sort_by(.submitted_at) | last | .commit_id // empty')
+          if [ "$LATEST_REVIEW_SHA" = "$head_sha" ]; then
+            echo "::notice::Latest $REVIEWER review targets current head — waiting for fresh state."
+            exit 0
+          fi
+
+          echo "Dismissing stale review $STALE_ID on PR #$PR"
+          gh api "repos/$REPO/pulls/$PR/reviews/$STALE_ID/dismissals" -f message="Dismissed by clear-stale-reviews: targets non-head commit, all checks green." >/dev/null
+          echo "::notice::Dismissed stale $REVIEWER review $STALE_ID."

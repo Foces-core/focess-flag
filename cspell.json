@@ -1,0 +1,38 @@
+{
+  "$schema": "https://raw.githubusercontent.com/streetsidesoftware/cspell/main/cspell.schema.json",
+  "version": "0.2",
+  "language": "en",
+  "ignorePaths": [
+    "node_modules/**",
+    ".next/**",
+    "coverage/**",
+    "lighthouse-results/**",
+    "stryker-report/**",
+    "test-results/**",
+    "playwright-report/**",
+    "docs/screenshots/**",
+    "pnpm-lock.yaml",
+    ".git/**"
+  ],
+  "files": ["**/*.{md,mdx,ts,tsx,mjs,cjs,json,yml,yaml,sh,toml,txt,css}"],
+  "words": [
+    "autorun",
+    "coderabbit",
+    "coderabbitai",
+    "cspell",
+    "deepsource",
+    "FOCES",
+    "focess",
+    "lcov",
+    "lhci",
+    "lighthouserc",
+    "lychee",
+    "pnpm",
+    "shellcheck",
+    "skipcq",
+    "stryker",
+    "typecheck",
+    "vitest",
+    "zizmor"
+  ]
+}

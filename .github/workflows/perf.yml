@@ -1,0 +1,91 @@
+name: Performance budgets
+
+# Lighthouse performance budgets. Runs fully only when a Node web app with
+# perf scripts exists (package.json with perf:quick + start script and lhci
+# config). On a setup-stage repo with no app, the job succeeds quietly.
+# Nightly schedule runs the full matrix; PRs/pushes run the quick subset.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: perf-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lighthouse:
+    name: Lighthouse
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect perf support
+        id: detect
+        run: |
+          if [ -f package.json ] && grep -q '"perf:quick"' package.json && grep -q '"start"' package.json; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No perf setup (package.json with start + perf:quick scripts) — skipping."
+          fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.detect.outputs.supported == 'true'
+        with:
+          version: 10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: steps.detect.outputs.supported == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.detect.outputs.supported == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Chromium for Lighthouse
+        if: steps.detect.outputs.supported == 'true'
+        run: pnpm exec playwright install chromium
+
+      - name: Build
+        if: steps.detect.outputs.supported == 'true'
+        run: pnpm build
+
+      - name: Run Lighthouse audits
+        if: steps.detect.outputs.supported == 'true'
+        run: |
+          pnpm start --port 3100 > /tmp/app.log 2>&1 &
+          APP_PID=$!
+          for i in $(seq 1 90); do
+            if curl -sf http://127.0.0.1:3100 > /dev/null; then break; fi
+            sleep 1
+          done
+          EXIT_CODE=0
+          pnpm exec lhci autorun || EXIT_CODE=$?
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            pnpm perf:matrix --server 3100 || EXIT_CODE=$?
+          else
+            pnpm perf:quick --server 3100 || EXIT_CODE=$?
+          fi
+          kill "$APP_PID" 2> /dev/null || true
+          exit $EXIT_CODE
+
+      - name: Upload Lighthouse results
+        if: always() && steps.detect.outputs.supported == 'true'
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: lighthouse-results
+          path: lighthouse-results/
+          retention-days: 14

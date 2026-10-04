@@ -1,0 +1,81 @@
+name: i18n
+
+# Refresh translations via General Translation. Skips quietly unless:
+# 1. GT secrets (GT_API_KEY + GT_PROJECT_ID) are configured, AND
+# 2. a Node project with i18n sources exists (src/lib/i18n/*.json).
+# Locales keep their committed translations until both hold.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: i18n-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  translate:
+    name: Refresh translations (General Translation)
+    runs-on: ubuntu-latest
+    env:
+      HAS_GT_CREDS: ${{ secrets.GT_API_KEY != '' && secrets.GT_PROJECT_ID != '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - name: Detect i18n support
+        id: detect
+        run: |
+          if [ -f package.json ] && ls src/lib/i18n/*.json >/dev/null 2>&1; then
+            echo "supported=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "supported=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No i18n sources (src/lib/i18n/*.json) — skipping."
+          fi
+
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        if: steps.detect.outputs.supported == 'true' && env.HAS_GT_CREDS == 'true'
+        with:
+          version: 10
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        if: steps.detect.outputs.supported == 'true' && env.HAS_GT_CREDS == 'true'
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        if: steps.detect.outputs.supported == 'true' && env.HAS_GT_CREDS == 'true'
+        run: pnpm install --frozen-lockfile
+
+      - name: gt translate
+        if: steps.detect.outputs.supported == 'true' && env.HAS_GT_CREDS == 'true'
+        env:
+          GT_API_KEY: ${{ secrets.GT_API_KEY }}
+          GT_PROJECT_ID: ${{ secrets.GT_PROJECT_ID }}
+        run: pnpm exec gt translate || echo "::warning::gt translate failed (quota or API error) — committed translations kept"
+
+      - name: Detect changed translations
+        id: diff
+        if: steps.detect.outputs.supported == 'true' && env.HAS_GT_CREDS == 'true'
+        run: echo "count=$(git status --porcelain -- src/lib/i18n | wc -l)" >> "$GITHUB_OUTPUT"
+
+      - name: Create translation update PR
+        if: steps.detect.outputs.supported == 'true' && env.HAS_GT_CREDS == 'true' && steps.diff.outputs.count != '0'
+        uses: peter-evans/create-pull-request@5f6978faf089d4d20b00c7766989d076bb2fc7f1 # v8.1.1
+        with:
+          commit-message: "i18n: refresh translations from General Translation"
+          title: "i18n: translation updates"
+          body: |
+            Automated refresh of `src/lib/i18n/*.json` by the General Translation
+            CLI (`gt translate`). Review diffs, especially for locales whose
+            translation quality matters to you, then merge.
+          branch: i18n/auto-translations
+          delete-branch: true
+          labels: i18n
