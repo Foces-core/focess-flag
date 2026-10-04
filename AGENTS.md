@@ -128,3 +128,5 @@ Read this before touching anything.
 - Update `README.md`, `CONTRIBUTING.md`, `SKILL.md`, `CHANGELOG.md`,
   references when commands, structure, behavior, security model change.
   Drop overclaims. State verified behavior only.
+- SEO runbook lives in `docs/seo.md`. `inspo/` intake turns into
+  `public/` derivatives; `seo-guard` workflow enforces the handoff.
